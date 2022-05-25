@@ -1,0 +1,3 @@
+# GetSoundCardInfo
+GetSoundCardInfo
+获取声卡信息，可以通过此方法获得其他硬件信息
