@@ -1,0 +1,266 @@
+// ConsoleApplication4.cpp : This file contains the 'main' function. Program execution begins and ends there.
+//
+
+#include <cmath>
+#include <memory>
+#include <string>
+#include <vector>
+// windows
+#include <Windows.h>
+#include <comdef.h>
+#include <Wbemidl.h>
+
+#pragma comment(lib, "wbemuuid.lib")
+
+//stl
+#include <iostream>
+#include <map>
+#include <sstream>
+#include <iomanip>
+#include <iostream>
+
+struct WMICContext
+{
+	HRESULT hResult = NULL;
+	IWbemLocator* pLoc = NULL;
+	IWbemServices* pSvc = NULL;
+	std::stringstream message;
+};
+
+// Win32_SoundDevice
+struct WMIC_SoundDevice
+{
+	std::wstring name;
+	std::wstring desc;   //Description
+	std::wstring manufacturer;
+	std::wstring ProductName;
+	std::wstring Status;
+	std::uint16_t StatusInfo;
+};
+
+std::unique_ptr<struct WMICContext> pCtx;
+
+void WMIC()
+{
+	pCtx = std::make_unique<WMICContext>();
+
+	//Step 1
+	//Initialize COM
+	pCtx->hResult = CoInitializeEx(0, COINIT_MULTITHREADED);
+	if (FAILED(pCtx->hResult)) {
+		pCtx->message.clear();
+		pCtx->message << "Failed to initialize COM library. Error code = 0x" << std::hex << pCtx->hResult << std::endl;
+		//throw WMICException(pCtx->message.str());
+	}
+
+	//Step 2
+	//Set general COM security levels
+	pCtx->hResult = CoInitializeSecurity(
+		NULL,
+		-1,                          // COM authentication
+		NULL,                        // Authentication services
+		NULL,                        // Reserved
+		RPC_C_AUTHN_LEVEL_DEFAULT,   // Default authentication
+		RPC_C_IMP_LEVEL_IMPERSONATE, // Default Impersonation
+		NULL,                        // Authentication info
+		EOAC_NONE,                   // Additional capabilities
+		NULL                         // Reserved
+	);
+	if (FAILED(pCtx->hResult))
+	{
+		pCtx->message.clear();
+		pCtx->message << "Failed to initialize security. Error code = 0x" << std::hex << pCtx->hResult << std::endl;
+		CoUninitialize();
+		//throw WMICException(pCtx->message.str());
+		// Program has failed.
+	}
+
+	//Step 3
+	//Obtain the initial locator to WMI
+	pCtx->hResult = CoCreateInstance(
+		CLSID_WbemLocator,
+		0,
+		CLSCTX_INPROC_SERVER,
+		IID_IWbemLocator, (LPVOID*)& pCtx->pLoc);
+
+	if (FAILED(pCtx->hResult))
+	{
+		pCtx->message.clear();
+		pCtx->message << "Failed to create IWbemLocator object." << " Err code = 0x" << std::hex << pCtx->hResult << std::endl;
+		CoUninitialize();
+		//throw WMICException(pCtx->message.str());
+		// Program has failed.
+	}
+
+	//Step 4
+	//Connect to WMI through the IWbemLocator::ConnectServer method
+
+	// Connect to the root\cimv2 namespace with
+	// the current user and obtain pointer pSvc
+	// to make IWbemServices calls.
+	pCtx->hResult = pCtx->pLoc->ConnectServer(
+		_bstr_t(L"ROOT\\CIMV2"), // Object path of WMI namespace
+		NULL,                    // User name. NULL = current user
+		NULL,                    // User password. NULL = current
+		0,                       // Locale. NULL indicates current
+		NULL,                    // Security flags.
+		0,                       // Authority (for example, Kerberos)
+		0,                       // Context object
+		&pCtx->pSvc              // pointer to IWbemServices proxy
+	);
+
+	if (FAILED(pCtx->hResult))
+	{
+		pCtx->message.clear();
+		pCtx->message << "Could not connect. Error code = 0x" << std::hex << pCtx->hResult << std::endl;
+		pCtx->pLoc->Release();
+		CoUninitialize();
+		//throw WMICException(pCtx->message.str());
+		// Program has failed.
+	}
+
+	std::cout << "Connected to ROOT\\CIMV2 WMI namespace" << std::endl;
+
+	//Step 5
+	//Set security levels on the proxy
+	pCtx->hResult = CoSetProxyBlanket(
+		pCtx->pSvc,                  // Indicates the proxy to set
+		RPC_C_AUTHN_WINNT,           // RPC_C_AUTHN_xxx
+		RPC_C_AUTHZ_NONE,            // RPC_C_AUTHZ_xxx
+		NULL,                        // Server principal name
+		RPC_C_AUTHN_LEVEL_CALL,      // RPC_C_AUTHN_LEVEL_xxx
+		RPC_C_IMP_LEVEL_IMPERSONATE, // RPC_C_IMP_LEVEL_xxx
+		NULL,                        // client identity
+		EOAC_NONE                    // proxy capabilities
+	);
+
+	if (FAILED(pCtx->hResult))
+	{
+		pCtx->message.clear();
+		pCtx->message << "Could not set proxy blanket. Error code = 0x" << std::hex << pCtx->hResult << std::endl;
+		pCtx->pSvc->Release();
+		pCtx->pLoc->Release();
+		CoUninitialize();
+		//throw WMICException(pCtx->message.str());
+		// Program has failed.
+	}
+
+	//Step 6:
+	//Use the IWbemServices pointer to make requests of WMI
+}
+
+IEnumWbemClassObject* ExecQuery(std::unique_ptr<struct WMICContext>& ctx, const std::wstring className)
+{
+	IEnumWbemClassObject* pEnumerator = NULL;
+	std::wstring cmd = L"SELECT * FROM ";
+	cmd += className;
+
+	//std::wcout << cmd << std::endl;
+
+	ctx->hResult = ctx->pSvc->ExecQuery(
+		bstr_t("WQL"),
+		bstr_t(cmd.data()),
+		WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+		NULL,
+		&pEnumerator);
+
+	if (FAILED(ctx->hResult))
+	{
+		ctx->message.clear();
+		ctx->message << "Query for xxx failed." << " Error code = 0x" << std::hex << ctx->hResult << std::endl;
+		ctx->pSvc->Release();
+		ctx->pLoc->Release();
+		CoUninitialize();
+		//throw WMICException(ctx->message.str());
+		// Program has failed.
+	}
+	return pEnumerator;
+}
+
+std::vector<WMIC_SoundDevice> SoundDevice()
+{
+	IEnumWbemClassObject* pEnumerator = ExecQuery(pCtx, L"Win32_SoundDevice");
+
+	IWbemClassObject* pclsObj = NULL;
+	ULONG uReturn = 0;
+
+	std::vector<WMIC_SoundDevice> sdev;
+	WMIC_SoundDevice SoundDevice;
+	while (pEnumerator) {
+		HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
+
+		if (0 == uReturn) {
+			break;
+		}
+
+		VARIANT vtProp;
+		VariantInit(&vtProp);
+
+		// Get the value of the Name property
+		hr = pclsObj->Get(L"Name", 0, &vtProp, 0, 0);
+		if (SUCCEEDED(hr) && (V_VT(&vtProp) == VT_BSTR)) {
+			SoundDevice.name = vtProp.bstrVal;
+		}
+		VariantClear(&vtProp);
+
+		hr = pclsObj->Get(L"Description", 0, &vtProp, 0, 0);
+		if (SUCCEEDED(hr) && (V_VT(&vtProp) == VT_BSTR)) {
+			SoundDevice.desc = vtProp.bstrVal;
+		}
+		VariantClear(&vtProp);
+
+		hr = pclsObj->Get(L"Description", 0, &vtProp, 0, 0);
+		if (SUCCEEDED(hr) && (V_VT(&vtProp) == VT_BSTR)) {
+			SoundDevice.desc = vtProp.bstrVal;
+		}
+		VariantClear(&vtProp);
+
+		hr = pclsObj->Get(L"Manufacturer", 0, &vtProp, 0, 0);
+		if (SUCCEEDED(hr) && (V_VT(&vtProp) == VT_BSTR)) {
+			SoundDevice.manufacturer = vtProp.bstrVal;
+		}
+		VariantClear(&vtProp);
+
+		hr = pclsObj->Get(L"ProductName", 0, &vtProp, 0, 0);
+		if (SUCCEEDED(hr) && (V_VT(&vtProp) == VT_BSTR)) {
+			SoundDevice.ProductName = vtProp.bstrVal;
+		}
+		VariantClear(&vtProp);
+
+		hr = pclsObj->Get(L"Status", 0, &vtProp, 0, 0);
+		if (SUCCEEDED(hr) && (V_VT(&vtProp) == VT_BSTR)) {
+			SoundDevice.Status = vtProp.bstrVal;
+		}
+		VariantClear(&vtProp);
+
+		hr = pclsObj->Get(L"StatusInfo", 0, &vtProp, 0, 0);
+		if (SUCCEEDED(hr) && (V_VT(&vtProp) == VT_I4)) {
+			SoundDevice.StatusInfo = vtProp.uintVal;
+		}
+		
+		sdev.push_back(SoundDevice);
+
+#ifdef _DEBUG
+		std::wcout.imbue(std::locale("chs"));
+		std::wcout << SoundDevice.name << "\t";
+		std::wcout << SoundDevice.desc << "\t";
+		std::wcout << SoundDevice.manufacturer << "\t";
+		std::wcout << SoundDevice.ProductName << "\t";
+		std::wcout << SoundDevice.Status << "\t";
+		std::wcout << SoundDevice.StatusInfo << "\t";
+		std::wcout << std::endl;
+#endif
+		pclsObj->Release();
+	}
+	pEnumerator->Release();
+
+	return sdev;
+}
+
+
+int main()
+{
+    std::cout << "Hello World!\n";
+	WMIC();
+	SoundDevice();
+}
